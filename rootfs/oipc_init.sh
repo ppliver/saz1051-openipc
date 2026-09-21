@@ -64,10 +64,23 @@ say "[2] bringup_wifi.sh (prebuilt cfg80211_v20 + mac80211) -> /tmp/wifi.log"
 /opt/tools/bringup_wifi.sh > /tmp/wifi.log 2>&1 &
 
 # ---------- 3) MPP(open_*.ko) + sensor ----------
-say "[3] load_hisilicon -i -sensor0 os05l10"
-export SENSOR=os05l10
-/opt/oipc/load_hisilicon -i -sensor0 os05l10 2>&1 | while read l; do echo "    | $l"; done
+# ★ 内核侧必须传 open_sys_config.ko 内置 g_sensor_list 里存在的名字!
+#   实测(2026-09-21): OpenIPC 预编译 open_sys_config.ko 的 g_sensor_list =
+#     {os04d10, sc4336p, sc450ai, sc500ai, sc431hai, gc4023, bt1120/bt656/bt601}
+#   —— **没有 os05l10**, 传 os05l10 会打印
+#     "parse sensor[os05l10] failed!" 并放弃 sensor 初始化。
+#   注意: 把 os05l10 加进那张表是不可能的(模块是预编译二进制)。
+#   对照厂商做法(实测): /opt/ko/load3516cv610/load3516cv610_20s_debug 里
+#     SNS_TYPE0=sc4336p  —— 厂商给内核也是传 sc4336p(通用 MIPI/pinmux 预设),
+#   真正的 OS05L10 走线/时钟时序由下面第 4 步 sensor_mux.sh 直写寄存器补齐
+#   (0x17940040/0x17940050/0x17940098/0x1794009c/0x11018440)。
+#   userspace 侧仍然是 os05l10: /etc/sensors/os05l10.ini(DllFile=libsns_os05l10.so)
+#   + /usr/lib/sensors/libsns_os05l10.so + /opt/ceanic/scene/param/sensor_os05l10。
+KERNEL_SENSOR=sc4336p
+say "[3] load_hisilicon -i -sensor0 $KERNEL_SENSOR   (userspace sensor=os05l10)"
+/opt/oipc/load_hisilicon -i -sensor0 $KERNEL_SENSOR 2>&1 | while read l; do echo "    | $l"; done
 say "[3] open_* loaded: $(lsmod 2>/dev/null | grep -c '^open_')"
+export SENSOR=os05l10
 
 # ---------- 4) sensor 走线/时钟时序(必须落在 MPP 之后) ----------
 if [ -x /opt/tools/sensor_mux.sh ]; then
@@ -79,7 +92,20 @@ fi
 
 # ---------- 5) majestic(OpenIPC RTSP) ----------
 say "[5] start majestic -s  (SENSOR=$SENSOR, cfg=/etc/majestic.yaml)"
-/opt/oipc/majestic -s > /tmp/majestic.log 2>&1 &
+# ★ 必须显式用 OpenIPC 自带 musl loader 启动, 不能直接 exec:
+#   本 TF rootfs 的 /lib/ld-musl-arm.so.1 是厂商精简 musl(1651 个导出符号, 无
+#   crypt_r / nextafter / lrintf / crypt), 而 majestic 的 PT_INTERP 硬编码
+#   为 /lib/ld-musl-arm.so.1 -> 启动即报
+#     "Error relocating /opt/oipc/majestic: crypt_r: symbol not found"
+#   OpenIPC 的完整 musl(501KB, 1719 个导出符号)在 /opt/oipc/lib/。
+#   把 loader 作为 argv[0] 显式传入即可绕过 PT_INTERP, 且完全不动 /lib 系统 musl
+#   (2026-09-21 实测: `ld-musl-arm.so.1 majestic --version` -> 正常打印版本)。
+OIPC_LD=/opt/oipc/lib/ld-musl-arm.so.1
+if [ -x "$OIPC_LD" ]; then
+	LD_LIBRARY_PATH=/opt/oipc/lib "$OIPC_LD" /opt/oipc/majestic -s > /tmp/majestic.log 2>&1 &
+else
+	/opt/oipc/majestic -s > /tmp/majestic.log 2>&1 &
+fi
 sleep 15
 say "[5] majestic pid: $(pidof majestic 2>/dev/null || echo none)"
 say "[5] listen 554 : $(netstat -ltn 2>/dev/null | grep ':554' || echo none)"
