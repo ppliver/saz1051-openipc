@@ -65,7 +65,7 @@ jobs:
             build-essential bc bison flex \
             libssl-dev libelf-dev libncurses-dev \
             gcc-arm-linux-gnueabihf \
-            u-boot-tools \
+            u-boot-tools device-tree-compiler \
             git rsync cpio xz-utils
           ${CROSS_COMPILE}gcc --version | head -1
           mkimage -V
