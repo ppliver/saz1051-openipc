@@ -15,9 +15,10 @@ video1:
 jpeg:
   enabled: false
 audio:
+  enabled: false
   volume: 30
   outputVolume: 30
 watchdog:
   enabled: false
 hls:
-  enabled: true
+  enabled: false

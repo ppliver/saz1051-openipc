@@ -58,7 +58,8 @@ YAML_FILE = "%s/etc/majestic.yaml" % BASE
 # 构建期断言：与设备上实测通过的指纹一致，不符即拒绝出包（防"镜像装旧件"）
 EXPECT_MD5 = {
     "libsns": "9378f86e6d8b5accc365f3775e6ad43d",  # I2C 修复版(.i2c_dev=0)
-    "init":   "0579a18a70702034e1f977f30ed58d9d",  # warm-up见好就收+clear_isp+有界监督
+    "init":   "b6c3e962763216dfa58abe6c5148db44",  # v3: safe_reboot+内存水位守护+日志轮转+tmpfs限额
+    "yaml":   "0837da681f269799f9b1d8f89db57d8e",  # 关 HLS + audio off（内存从 0.9MB -> 4.5MB）
 }
 
 # ----------------------------------------------------------------------------
@@ -173,7 +174,7 @@ def main():
         sh(c, "test -d %s && echo 'OpenIPC 基线 OK'" % SRC)
         print("=== 0b. 关键件指纹断言（不符即拒出包）===", flush=True)
         fp = {}
-        for k, path in (("libsns", LIBSNS), ("init", INIT_SH_FILE)):
+        for k, path in (("libsns", LIBSNS), ("init", INIT_SH_FILE), ("yaml", YAML_FILE)):
             o, e = sh(c, "md5sum %s 2>&1" % path)
             fp[k] = (o.split() or ["MISSING"])[0]
             ok = "OK " if fp[k] == EXPECT_MD5[k] else "MISMATCH!"
@@ -181,8 +182,6 @@ def main():
         bad = [k for k in fp if fp[k] != EXPECT_MD5[k]]
         if bad:
             raise SystemExit("ABORT: 关键件指纹不符 %s —— 先把真源同步到 177 再构建" % bad)
-        o, _ = sh(c, "md5sum %s 2>&1" % YAML_FILE)
-        print("    yaml    %s" % (o.split() or ["MISSING"])[0])
         sh(c, "test -f %s && echo 'ini OK'" % INI)
         sh(c, "test -d %s && echo 'CI 模块 OK' || echo 'CI 模块 MISSING'" % MODULES)
         sh(c, "test -f %s/wifi_soc_v15.ko && echo 'wifi ko OK'" % WIFI_DIR)
