@@ -22,3 +22,7 @@ watchdog:
   enabled: false
 hls:
   enabled: false
+# 本板未接 IRCUT 电磁线圈（原厂固件 IrCutOpen=-1/IrCutClose=-1 可证），
+# 关闭 "Drive the IR-cut filter"，否则 Web UI 持续报 no-pins 警告。
+nightMode:
+  irCutEnabled: false
