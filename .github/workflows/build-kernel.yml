@@ -120,10 +120,17 @@ jobs:
           scripts/config --disable PM_SLEEP_SMP --disable PM_SLEEP \
                          --disable SUSPEND --disable PM
           make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE olddefconfig
-          # ⚠️ 必须 prepare: 只改 .config 而不同步 include/generated/autoconf.h,
+          # ⚠️ 必须同步头文件: 只改 .config 而不同步 include/generated/autoconf.h,
           #    后面 make M=... modules 会静默沿用旧头文件 → 量出来的 struct 尺寸不变,
           #    会得出"改配置没用"的错误结论(实测踩过)。
-          make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE prepare
+          # ⚠️ 必须用 modules_prepare 而非 prepare: 顶层 Makefile 里
+          #      modules_prepare: prepare
+          #              $(MAKE) $(build)=scripts scripts/module.lds
+          #    即前者是 prepare 的**超集**, 多生成 scripts/module.lds; 而 `make M=... modules`
+          #    链接 .ko 需要 `-T scripts/module.lds`, 缺了会
+          #      "No rule to make target 'scripts/module.lds'" → Error 2
+          #    (2026-09-21 CI 实测踩到; 177 本地因为早就全量编过一次才没暴露)。
+          make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE modules_prepare
 
           echo '=== PM (必须全为 not set) ==='
           grep -E '^# CONFIG_(PM|SUSPEND|PM_SLEEP|PM_SLEEP_SMP) is not set' .config || true
@@ -134,9 +141,25 @@ jobs:
           fi
           grep -E 'define CONFIG_(PM|PM_SLEEP|SUSPEND) 1' include/generated/autoconf.h \
             && { echo '!! autoconf.h 里仍有 PM' >&2; exit 1; } || echo 'OK: autoconf.h 无 PM'
+          ls -la scripts/module.lds
 
-          echo '=== 其它关键项 ==='
-          grep -E '^CONFIG_(MODULES|SMP|THUMB2|MTD_SPI_NAND_BSP|MTD_UBI|UBIFS_FS|USB_DWC3|STRICT_DEVMEM|CFG80211|WIRELESS|IKCONFIG|MODULE_FORCE_LOAD)=' .config
+          echo '=== 其它关键项 (逐项断言, 缺一不可) ==='
+          for sym in MODULES SMP THUMB2_KERNEL MTD_SPI_NAND_BSP MTD_UBI UBIFS_FS \
+                     USB_DWC3 IKCONFIG MODULE_FORCE_LOAD WIRELESS; do
+            line=$(grep -E "^CONFIG_${sym}=" .config || true)
+            if [ -z "$line" ]; then
+              echo "!! CONFIG_${sym} 未开启" >&2
+              grep -E "^# CONFIG_${sym} is not set" .config || true
+              exit 1
+            fi
+            echo "  $line"
+          done
+          # STRICT_DEVMEM 必须为 n(majestic 要 mmap MPP 寄存器)
+          if grep -qE '^CONFIG_STRICT_DEVMEM=y' .config; then
+            echo '!! CONFIG_STRICT_DEVMEM 仍为 y → majestic 无法 mmap 寄存器' >&2
+            exit 1
+          fi
+          echo '  CONFIG_STRICT_DEVMEM is not set (期望)'
 
       - name: ABI guard (sizeof(struct device) must be 272)
         run: |

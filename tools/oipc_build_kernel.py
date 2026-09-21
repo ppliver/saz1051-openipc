@@ -305,11 +305,18 @@ def sh(c, cmd, quiet=False, timeout=3600):
 
 
 def apply_config(c):
-    """生成 .config: defconfig + fragment, 再强制 --disable PM, 最后 olddefconfig + prepare。
+    """生成 .config: defconfig + fragment, 再强制 --disable PM, 最后 olddefconfig + modules_prepare。
 
-    ⚠️ 必须跑 `make prepare`! 只改 .config 而不同步 include/generated/autoconf.h,
+    ⚠️ 必须同步头文件! 只改 .config 而不同步 include/generated/autoconf.h,
        后续 `make M=... modules` 会静默沿用旧头文件 —— 实测踩过: 测出来的 struct 尺寸
        完全不变, 从而得出"改配置没用"的错误结论。
+    ⚠️ 用 modules_prepare 而非 prepare。顶层 Makefile:
+         modules_prepare: prepare
+                 $(MAKE) $(build)=scripts scripts/module.lds
+       即 modules_prepare 是 prepare 的**超集**, 额外生成 scripts/module.lds;
+       而 `make M=... modules` 链接 .ko 要 `-T scripts/module.lds`, 缺了会
+       "No rule to make target 'scripts/module.lds'" → Error 2。
+       (2026-09-21 GitHub Actions 上实测踩到; 177 因早已全量编过一次才没暴露。)
     """
     sh(c, "cat > /home/zhang/oipc-saz/saz_fragment.cfg <<'EOF'\n%s\nEOF" % FRAGMENT, quiet=True)
     sh(c, "cd %s && cp arch/arm/configs/hi3516cv610_defconfig .config" % LINUX)
@@ -318,7 +325,9 @@ def apply_config(c):
     sh(c, "cd %s && scripts/config --disable PM_SLEEP_SMP --disable PM_SLEEP "
           "--disable SUSPEND --disable PM" % LINUX)
     sh(c, "cd %s && make ARCH=arm CROSS_COMPILE=%s olddefconfig 2>&1 | tail -3" % (LINUX, TC))
-    sh(c, "cd %s && make ARCH=arm CROSS_COMPILE=%s prepare 2>&1 | tail -3" % (LINUX, TC))
+    sh(c, "cd %s && make ARCH=arm CROSS_COMPILE=%s modules_prepare 2>&1 | tail -3" % (LINUX, TC))
+    sh(c, "cd %s && echo '--- scripts/module.lds (external module 链接必需) ---'; "
+          "ls -la scripts/module.lds" % LINUX)
     sh(c, "cd %s && echo '--- PM (必须全为 not set) ---'; "
           "grep -E '^# CONFIG_(PM|SUSPEND|PM_SLEEP|PM_SLEEP_SMP) is not set' .config; "
           "grep -E 'define CONFIG_(PM|PM_SLEEP|SUSPEND) 1' include/generated/autoconf.h "
@@ -412,12 +421,21 @@ def main():
             sh(c, "echo '=== 验证 PM 桩已编入 ==='; "
                   "grep -c saz_pm_stub %s/drivers/vendor/built-in.a 2>/dev/null || true; "
                   "echo '=== 内核导出的 PM notifier 符号 ==='; "
-                  "grep -E ' (register_pm_notifier|unregister_pm_notifier)$' %s/Module.symvers || "
+                  # ⚠️ 勿加 '$' 行尾锚点: Module.symvers 行是
+                  #    "0x00000000\tregister_pm_notifier\tvmlinux\tEXPORT_SYMBOL\t"
+                  #    —— 结尾是 TAB, 不是 EOL。曾因 '...$' 误报"桩未被链接"(2026-09-21)。
+                  "grep -E '(register_pm_notifier|unregister_pm_notifier)' %s/Module.symvers || "
                   "echo '!! 桩未被链接(Module.symvers 无该符号)'; "
-                  "echo '=== vermagic ==='; strings %s/arch/arm/boot/Image 2>/dev/null | grep -m1 'vermagic='; "
+                  "echo '=== vmlinux 中桩是否为 GLOBAL 定义(T) ==='; "
+                  "%sreadelf -sW %s/vmlinux | grep -E ' (register_pm_notifier|unregister_pm_notifier)$' || "
+                  "echo '!! vmlinux 无该符号 —— 检查 drivers/vendor/Makefile 的 obj-y 行'; "
+                  "echo '=== vermagic (取本内核编出的 cfg80211.ko; 期望 "
+                  "5.10.221 SMP mod_unload ARMv7 thumb2 p2v8) ==='; "
+                  "strings %s/modules/lib/modules/%s/kernel/net/wireless/cfg80211.ko 2>/dev/null "
+                  "| grep -m1 'vermagic=' || echo '(cfg80211.ko 未找到)'; "
                   "echo '=== outputs ==='; ls -la %s/uImage %s/hi3516cv610-demb.dtb; "
                   "find %s/modules -name '*.ko' | wc -l"
-                % (LINUX, LINUX, LINUX, STAGE, STAGE, STAGE))
+                % (LINUX, LINUX, TC, LINUX, STAGE, KREL, STAGE, STAGE, STAGE))
         elif cmd == "status":
             sh(c, "ls -la %s/uImage %s/hi3516cv610-demb.dtb %s/arch/arm/boot/zImage 2>/dev/null || "
                   "echo 'not built yet'" % (STAGE, STAGE, LINUX))
