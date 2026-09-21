@@ -1,0 +1,23 @@
+# Managed by majestic. Comments and formatting are removed when settings change
+# via the web UI or API. Only settings that differ from this build's defaults
+# are kept, so a default that changes in a later version still reaches you.
+image:
+  rotate: 0
+video0:
+  fps: 20
+  enabled: true
+  gopSize: "1"
+  size: 2880x1620
+video1:
+  fps: 15
+  size: 704x576
+  enabled: false
+jpeg:
+  enabled: false
+audio:
+  volume: 30
+  outputVolume: 30
+watchdog:
+  enabled: false
+hls:
+  enabled: true
