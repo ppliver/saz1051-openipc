@@ -24,5 +24,10 @@ hls:
   enabled: false
 # 本板未接 IRCUT 电磁线圈（原厂固件 IrCutOpen=-1/IrCutClose=-1 可证），
 # 关闭 "Drive the IR-cut filter"，否则 Web UI 持续报 no-pins 警告。
+# 红外补光：原厂 gpio.json 的 FillLed.IRLed=9，Enable=1（高电平点亮）。
+# majestic 的这个版本没有独立 irLedPin，"camera light"(=backlightPin) 即夜视补光。
+# 昼夜判定：无光敏/无阈值时 majestic 按曝光自动判(night=快门打满)。
 nightMode:
   irCutEnabled: false
+  backlightEnabled: true
+  backlightPin: 9

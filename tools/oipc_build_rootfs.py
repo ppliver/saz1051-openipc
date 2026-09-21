@@ -60,7 +60,7 @@ EXPECT_MD5 = {
     "libsns": "9378f86e6d8b5accc365f3775e6ad43d",  # I2C 修复版(.i2c_dev=0)
     # v4: 在 v3 基础上修"600s 有界等待误杀正常 majestic -> 每 10 分钟整机重启"的回归
     "init":   "a9d21478abc2d75d991e4ecf272073df",
-    "yaml":   "15c4ee05c4b7d8a1610bf0fe14c5ea73",  # 关 HLS/audio + nightMode.irCutEnabled=false（本板无 IRCUT）
+    "yaml":   "cde71ceec78b813125c0e52162ccbebb",  # 关 HLS/audio + nightMode.irCutEnabled=false（本板无 IRCUT）
 }
 
 # ----------------------------------------------------------------------------
