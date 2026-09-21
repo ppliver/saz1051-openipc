@@ -1,0 +1,18 @@
+#!/bin/sh
+# OpenIPC-on-TF shim: 本 TF rootfs 的 /lib/modules/5.10.221/modules.dep 不含 hisilicon/open_*,
+# 故 busybox `modprobe <name>` 按名解析必然失败 -> 这里改成按绝对路径直插。
+# 兼容用法: modprobe <name> [param=val ...]  |  modprobe -r <name>
+BB=/bin/busybox
+if [ "$1" = "-r" ]; then
+	shift
+	exec $BB rmmod "$@"
+fi
+m="$1"
+[ -n "$m" ] || exit 1
+shift
+R=$($BB uname -r)
+for p in /lib/modules/$R/hisilicon/$m.ko /lib/modules/$R/kernel/$m.ko; do
+	[ -e "$p" ] && exec $BB insmod "$p" "$@"
+done
+echo "modprobe(shim): module '$m' not found" >&2
+exit 1

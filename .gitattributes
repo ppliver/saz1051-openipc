@@ -1,0 +1,18 @@
+# 强制 LF —— 本仓库里的 shell 脚本 / 内核 patch / 配置片段一旦变成 CRLF 就会坏:
+#   * rootfs/*.sh, rootfs/sbin/*  → 设备上 shebang "#!/bin/sh\r" 直接失效
+#   * kernel/*.patch             → CI 里 git apply 失败
+#   * kernel/*.its / *.cfg       → mkimage / kconfig 解析异常
+# 故统一: 仓库内一律 LF 存储、一律 LF 检出。
+* text=auto eol=lf
+
+# 明确按二进制处理(不做任何换行/编码转换)
+*.ko    binary
+*.so    binary
+*.bin   binary
+*.img   binary
+*.tgz   binary
+*.gz    binary
+*.zip   binary
+*.ubifs binary
+*.dtb   binary
+*.itb   binary

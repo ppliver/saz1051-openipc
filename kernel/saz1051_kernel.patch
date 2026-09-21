@@ -1,0 +1,130 @@
+diff --git a/arch/arm/boot/dts/hi3516cv610-demb.dts b/arch/arm/boot/dts/hi3516cv610-demb.dts
+index a648001f5..2a9aed389 100644
+--- a/arch/arm/boot/dts/hi3516cv610-demb.dts
++++ b/arch/arm/boot/dts/hi3516cv610-demb.dts
+@@ -118,15 +118,16 @@
+ };
+ 
+ &mmc0 {
+-	status = "okay";
++	status = "disabled";
+ };
+ 
+ &sdio0 {
+-	status = "disabled";
++	status = "okay";
++	broken-cd;
+ };
+ 
+ &sdio1 {
+-	status = "okay";
++	status = "disabled";
+ };
+ 
+ &gpio_chip0 {
+@@ -172,3 +173,4 @@
+ &gpio_chip10 {
+ 	status = "okay";
+ };
++
+diff --git a/arch/arm/boot/dts/hi3516cv610_family_usb.dtsi b/arch/arm/boot/dts/hi3516cv610_family_usb.dtsi
+index 21b38058c..de74a91d7 100644
+--- a/arch/arm/boot/dts/hi3516cv610_family_usb.dtsi
++++ b/arch/arm/boot/dts/hi3516cv610_family_usb.dtsi
+@@ -30,6 +30,7 @@
+ 			reg-names = "u2_ctrl";
+ 			controller_id = <0>;
+ 			support-drd;
++			host-mode;
+ 			is-usb2;
+ 			filter-se0-fsls;
+ 			phys = <&usb2phy0>;
+@@ -37,7 +38,7 @@
+ 			clocks = <&ups_clock PERI_CRG3664_USB30_CTRL0>;
+ 			clock-names = "ctrl-clk";
+ 			#clock-cells = <1>;
+-			init_mode="device";
++			init_mode="host";
+ 			status = "okay";
+ 			ranges;
+ 			#address-cells = <1>;
+diff --git a/arch/arm/mach-vendor/pm.c b/arch/arm/mach-vendor/pm.c
+index 67a5c04ed..2eec41e60 100644
+--- a/arch/arm/mach-vendor/pm.c
++++ b/arch/arm/mach-vendor/pm.c
+@@ -4,6 +4,7 @@
+  */
+ 
+ #include "asm/io.h"
++#include <linux/err.h>
+ #include "linux/io.h"
+ #include "linux/securec.h"
+ #include <linux/dev_printk.h>
+@@ -131,7 +132,7 @@ static int hi35xxvxx_pm_probe(struct platform_device *pdev)
+ 	}
+ 
+ 	pm_device->sram_base = devm_platform_ioremap_resource(pdev, 0);
+-	if (!pm_device->sram_base) {
++	if (IS_ERR_OR_NULL(pm_device->sram_base)) {
+ 		devm_iounmap(&pdev->dev, pm_device->ahb_misc_base);
+ 		release_resource(pm_device->ahb_misc_res);
+ 		kfree(pm_device);
+@@ -176,7 +177,7 @@ MODULE_DEVICE_TABLE(of, hi35xx_pm_ids);
+ static struct platform_driver hi35xxvxx_pm_driver = {
+ 	.driver = {
+ 		.name = "hi35xxvxx_pm_driver",
+-		.of_match_table = of_match_ptr(hi35xx_pm_ids),
++		.of_match_table = NULL, /* NEUTERED: avoid probing broken vendor pm,sram suspend driver (release_resource(NULL) crash); camera never suspends, WiFi unaffected */
+ 	},
+ 	.probe = hi35xxvxx_pm_probe,
+ 	.remove = hi35xxvxx_pm_remove,
+diff --git a/drivers/vendor/Makefile b/drivers/vendor/Makefile
+index c3a1e6fd7..246e53ddb 100644
+--- a/drivers/vendor/Makefile
++++ b/drivers/vendor/Makefile
+@@ -4,3 +4,6 @@ obj-$(CONFIG_WING_UPS_PHY)		+= ups_phy/
+ obj-$(CONFIG_BASEDRV_CLK)		+= basedrv_clk/
+ obj-$(CONFIG_MMC)			+= mmc/
+ obj-$(CONFIG_BSP_TIMER)			+= bsp_timer/
++
++# SAZ1051: PM notifier stubs (needed when built with CONFIG_PM=n)
++obj-y += saz_pm_stub.o
+diff --git a/drivers/vendor/saz_pm_stub.c b/drivers/vendor/saz_pm_stub.c
+new file mode 100644
+index 000000000..6f4b2113e
+--- /dev/null
++++ b/drivers/vendor/saz_pm_stub.c
+@@ -0,0 +1,33 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * SAZ1051: PM notifier 空实现桩 (内核以 CONFIG_PM=n 构建时的补偿)
++ *
++ * 为什么需要(2026-09-21 实锤, 详见 tools/oipc_build_kernel.py 文件头):
++ *   - MPP 预编译 open_*.ko 是按 CONFIG_PM=n 的内核构建的, 故本内核必须 CONFIG_PM=n,
++ *     否则 sizeof(struct device) 从 272 变 456, device_register(&g_media_bus) 会越界
++ *     写坏 open_osal.ko 里的 g_media_bus_type.bus_groups, bus_register() 随即 panic。
++ *   - 但 WS73 WiFi 的 plat_soc.ko 引用 register_pm_notifier/unregister_pm_notifier,
++ *     这两个符号只在 kernel/power/main.c(CONFIG_PM_SLEEP) 里导出; CONFIG_PM=n 时缺失,
++ *     insmod 会报 "plat_soc: Unknown symbol register_pm_notifier (err -2)"。
++ *   - 摄像头常供电、从不 suspend, 空实现语义正确。
++ *
++ * 用 EXPORT_SYMBOL(非 _GPL) 以兼容 GPL / 非 GPL 消费者。
++ */
++#include <linux/export.h>
++#include <linux/notifier.h>
++
++#if !IS_ENABLED(CONFIG_PM_SLEEP)
++
++int register_pm_notifier(struct notifier_block *nb)
++{
++	return 0;	/* 永不触发: 本内核没有 suspend/resume 路径 */
++}
++EXPORT_SYMBOL(register_pm_notifier);
++
++int unregister_pm_notifier(struct notifier_block *nb)
++{
++	return 0;
++}
++EXPORT_SYMBOL(unregister_pm_notifier);
++
++#endif /* !CONFIG_PM_SLEEP */

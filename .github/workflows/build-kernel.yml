@@ -1,0 +1,255 @@
+name: build-kernel
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 从 openipc/linux(分支 hisilicon-hi3516cv6xx, 钉死 commit)构建 SAZ1051 用的内核。
+#
+# 为什么需要 CI:
+#   177 构建机只有 2 核 3G, 全量内核编译要几十分钟; 且"能不能从干净树复现"这件事本身
+#   需要一台干净机器来证明 —— 本 workflow 就是那份证明: 干净 ubuntu + 公开工具链 +
+#   本仓库的 patch/fragment, 从零编出可启动的 FIT 内核。
+#
+# 关键工艺(每一条都是踩坑换来的, 详见 README):
+#   [1] 应用 kernel/saz1051_kernel.patch    —— DTS(sdio/USB host) + vendor pm.c 去雷 + PM 桩
+#   [2] 应用 kernel/saz_fragment.cfg        —— SAZ1051 增量配置
+#   [3] ★ ABI 守卫 ★ 断言 sizeof(struct device)==272, 不通过直接 fail, 不出包。
+#       MPP 预编译 open_*.ko 是按 CONFIG_PM=n 的内核构建的; 若本内核 CONFIG_PM=y,
+#       struct device 会从 272 变 456, device_register(&g_media_bus) 越界写坏
+#       open_osal.ko 里的 g_media_bus_type.bus_groups, bus_register() 解引用 0x2 → panic。
+#       这条断言把"编出来但一加载就崩"的包挡在门外。
+#   [4] 交付物必须是 FIT(.itb)。本机 U-Boot 无 legacy/ATAGS 支持。
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      linux_ref:
+        description: 'openipc/linux ref (commit / tag / branch)'
+        required: false
+        default: '533467722c14ef76507d15352ee0a9a9a331c11f'
+
+permissions:
+  contents: read
+
+env:
+  LINUX_REPO: https://github.com/openipc/linux.git
+  # 默认钉死到 hisilicon-hi3516cv6xx 分支 HEAD(2026-03-05); 换版本请改这里。
+  LINUX_REF: ${{ github.event.inputs.linux_ref || '533467722c14ef76507d15352ee0a9a9a331c11f' }}
+  # 内核 release 必须精确等于 5.10.221(不能带 '+'): 预编译 open_*.ko / WS73 ko 位于
+  #   /lib/modules/5.10.221/ 且 vermagic 为 "5.10.221 SMP mod_unload ARMv7 thumb2 p2v8"。
+  # 若不显式传 KERNELRELEASE, git 树(已打 patch, dirty)会让 UTS_RELEASE 变成 5.10.221+。
+  KREL: '5.10.221'
+  ARCH: arm
+  CROSS_COMPILE: arm-linux-gnueabihf-
+  # ABI 断言期望值 —— 与 MPP 预编译模块一致
+  ABI_DEV: '272'
+  ABI_PM: '32'
+  ABI_BUS: '88'
+
+jobs:
+  kernel:
+    name: kernel + FIT + modules
+    runs-on: ubuntu-22.04          # gcc 11: 5.10 内核代码在 gcc 13 上会因新警告炸掉
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex \
+            libssl-dev libelf-dev libncurses-dev \
+            gcc-arm-linux-gnueabihf \
+            u-boot-tools \
+            git rsync cpio xz-utils
+          ${CROSS_COMPILE}gcc --version | head -1
+          mkimage -V
+
+      - name: Cache openipc/linux
+        id: cache-linux
+        uses: actions/cache@v4
+        with:
+          path: linux
+          # 把 patch/fragment 的哈希并入 key: 改了补丁就换 key, 避免复用已改造的旧树
+          key: openipc-linux-${{ env.LINUX_REF }}-${{ hashFiles('kernel/saz1051_kernel.patch', 'kernel/saz_fragment.cfg') }}
+
+      - name: Clone openipc/linux
+        if: steps.cache-linux.outputs.cache-hit != 'true'
+        run: |
+          set -eux
+          git clone --filter=blob:none --no-checkout "$LINUX_REPO" linux
+          cd linux
+          git fetch --depth 1 origin "$LINUX_REF"
+          git checkout --detach FETCH_HEAD
+
+      - name: Record kernel source revision
+        run: |
+          set -eux
+          git -C linux log -1 --format='%H %ci %s' | tee linux-revision.txt
+
+      - name: Apply SAZ1051 kernel patch
+        run: |
+          set -eux
+          cd linux
+          # 幂等: 已经打过就跳过(缓存命中的树可能已含补丁)
+          if git apply --check -p1 ../kernel/saz1051_kernel.patch 2>/dev/null; then
+            git apply -p1 ../kernel/saz1051_kernel.patch
+            echo "patch applied"
+          elif git apply --check -R -p1 ../kernel/saz1051_kernel.patch 2>/dev/null; then
+            echo "patch already applied (reverse-check passed) — skip"
+          else
+            echo "!! patch does not apply cleanly against $LINUX_REF" >&2
+            git apply --verbose -p1 ../kernel/saz1051_kernel.patch || true
+            exit 1
+          fi
+          echo '--- touched files ---'
+          git status --porcelain
+
+      - name: Configure kernel
+        run: |
+          set -eux
+          cd linux
+          cp arch/arm/configs/hi3516cv610_defconfig .config
+          cat ../kernel/saz_fragment.cfg >> .config
+          # 双保险: 显式关 PM(不依赖 "# ... is not set" 行的解析顺序)
+          scripts/config --disable PM_SLEEP_SMP --disable PM_SLEEP \
+                         --disable SUSPEND --disable PM
+          make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE olddefconfig
+          # ⚠️ 必须 prepare: 只改 .config 而不同步 include/generated/autoconf.h,
+          #    后面 make M=... modules 会静默沿用旧头文件 → 量出来的 struct 尺寸不变,
+          #    会得出"改配置没用"的错误结论(实测踩过)。
+          make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE prepare
+
+          echo '=== PM (必须全为 not set) ==='
+          grep -E '^# CONFIG_(PM|SUSPEND|PM_SLEEP|PM_SLEEP_SMP) is not set' .config || true
+          if grep -qE '^CONFIG_(PM|PM_SLEEP|SUSPEND)=y' .config; then
+            echo '!! CONFIG_PM 仍被打开 → ABI 必然失配' >&2
+            grep -E '^CONFIG_(PM|PM_SLEEP|SUSPEND)=y' .config
+            exit 1
+          fi
+          grep -E 'define CONFIG_(PM|PM_SLEEP|SUSPEND) 1' include/generated/autoconf.h \
+            && { echo '!! autoconf.h 里仍有 PM' >&2; exit 1; } || echo 'OK: autoconf.h 无 PM'
+
+          echo '=== 其它关键项 ==='
+          grep -E '^CONFIG_(MODULES|SMP|THUMB2|MTD_SPI_NAND_BSP|MTD_UBI|UBIFS_FS|USB_DWC3|STRICT_DEVMEM|CFG80211|WIRELESS|IKCONFIG|MODULE_FORCE_LOAD)=' .config
+
+      - name: ABI guard (sizeof(struct device) must be 272)
+        run: |
+          set -eux
+          mkdir -p abi
+          cp kernel/abi_probe.c abi/probe.c
+          cp kernel/abi_probe.mk abi/Makefile
+          make -C linux M="$PWD/abi" ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE \
+               KERNELRELEASE=$KREL modules
+
+          dev=$(  ${CROSS_COMPILE}readelf -sW abi/probe.ko | awk '$NF=="sz_dev"{print $3}')
+          pminfo=$(${CROSS_COMPILE}readelf -sW abi/probe.ko | awk '$NF=="sz_pminfo"{print $3}')
+          bus=$(  ${CROSS_COMPILE}readelf -sW abi/probe.ko | awk '$NF=="sz_bus"{print $3}')
+          pmops=$( ${CROSS_COMPILE}readelf -sW abi/probe.ko | awk '$NF=="sz_pmops"{print $3}')
+
+          echo "sizeof(struct device)     = ${dev}   (期望 ${ABI_DEV})"
+          echo "sizeof(struct dev_pm_info)= ${pminfo} (期望 ${ABI_PM})"
+          echo "sizeof(struct bus_type)   = ${bus}   (期望 ${ABI_BUS})"
+          echo "sizeof(struct dev_pm_ops) = ${pmops}"
+
+          {
+            echo "sizeof(struct device)=${dev}"
+            echo "sizeof(struct dev_pm_info)=${pminfo}"
+            echo "sizeof(struct bus_type)=${bus}"
+            echo "sizeof(struct dev_pm_ops)=${pmops}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$dev" != "$ABI_DEV" ] || [ "$pminfo" != "$ABI_PM" ] || [ "$bus" != "$ABI_BUS" ]; then
+            {
+              echo "### ❌ ABI 失配 — 已拒绝出包"
+              echo ""
+              echo 'sizeof(struct device) = '"${dev}"', 期望 '"${ABI_DEV}"'。'
+              echo ""
+              echo "带此 ABI 启动的话: open_osal.ko 的 g_media_bus(272B) 会被 device_register()"
+              echo "越界写坏紧邻的 g_media_bus_type.bus_groups, bus_register() 随即解引用 0x2 → kernel panic"
+              echo "(现场: PC=internal_create_groups.part.0+0xc, LR=bus_register+0x135)。"
+              echo ""
+              echo "排查: .config 里 CONFIG_PM 是否被别的项 select 回来了?"
+              echo "      改完 .config 一定要 olddefconfig + prepare 再量尺寸。"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "!! ABI 失配, 拒绝继续编译" >&2
+            exit 1
+          fi
+          echo "✅ ABI 一致"
+
+      - name: Build zImage / dtbs / modules
+        run: |
+          set -eux
+          cd linux
+          make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE KERNELRELEASE=$KREL \
+               -j"$(nproc)" zImage dtbs modules
+          ls -la arch/arm/boot/zImage arch/arm/boot/dts/hi3516cv610-demb.dtb
+
+      - name: Build FIT (uImage.itb)
+        run: |
+          set -eux
+          mkdir -p out
+          cp linux/arch/arm/boot/dts/hi3516cv610-demb.dtb out/
+          cp linux/arch/arm/boot/zImage out/zImage
+          cp kernel/oipc_saz1051.its out/
+          cd out
+          mkimage -f oipc_saz1051.its uImage.itb
+          cp uImage.itb uImage
+          mkimage -l uImage.itb
+          ls -la uImage.itb hi3516cv610-demb.dtb
+
+      - name: Install modules
+        run: |
+          set -eux
+          make -C linux ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE KERNELRELEASE=$KREL \
+               INSTALL_MOD_PATH="$PWD/out/modules" modules_install
+          # 只保留 5.10.221/<kernel dirs>; 去掉 build/source 反向链接(它们指向 CI 临时路径)
+          rm -f out/modules/lib/modules/$KREL/build out/modules/lib/modules/$KREL/source
+          tar -C out/modules/lib/modules -czf out/kernel-modules-$KREL.tar.gz $KREL
+          find out/modules -name '*.ko' | wc -l
+
+      - name: Verify PM notifier stub is linked
+        run: |
+          set -eux
+          cd linux
+          echo '--- drivers/vendor/built-in.a 含 saz_pm_stub ---'
+          grep -c saz_pm_stub drivers/vendor/built-in.a
+          echo '--- Module.symvers 导出 (勿用 $ 行尾锚点: 该行以 TAB 结尾) ---'
+          grep -E '(register_pm_notifier|unregister_pm_notifier)' Module.symvers
+          echo '--- vmlinux 中为 GLOBAL 定义(T) ---'
+          ${CROSS_COMPILE}readelf -sW vmlinux \
+            | grep -E ' (register_pm_notifier|unregister_pm_notifier)$'
+          echo '--- 本内核编出的模块 vermagic (期望 5.10.221 SMP mod_unload ARMv7 thumb2 p2v8) ---'
+          strings "$GITHUB_WORKSPACE/out/modules/lib/modules/$KREL/kernel/net/wireless/cfg80211.ko" \
+            | grep -m1 'vermagic='
+          for sym in register_pm_notifier unregister_pm_notifier; do
+            grep -q "$sym" Module.symvers || { echo "!! 缺符号 $sym" >&2; exit 1; }
+          done
+          echo '✅ PM 桩已编入并导出'
+
+      - name: Checksums
+        run: |
+          cd out
+          sha256sum uImage.itb hi3516cv610-demb.dtb kernel-modules-$KREL.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+          cp "$GITHUB_WORKSPACE/linux-revision.txt" . 2>/dev/null || true
+          { echo '```'; cat SHA256SUMS; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: saz1051-kernel-${{ env.KREL }}
+          path: |
+            out/uImage.itb
+            out/uImage
+            out/hi3516cv610-demb.dtb
+            out/kernel-modules-*.tar.gz
+            out/SHA256SUMS
+            linux-revision.txt
+          retention-days: 30
+          if-no-files-found: error

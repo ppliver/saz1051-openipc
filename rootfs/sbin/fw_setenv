@@ -1,0 +1,4 @@
+#!/bin/sh
+# OpenIPC-on-TF shim: load_hisilicon 的 check_allocator() 会 fw_setenv mmz_allocator ...,
+# 本 TF 环境无 NAND env 可写 -> 静默成功即可(真正生效的 allocator 由 open_mmz 参数决定)。
+exit 0

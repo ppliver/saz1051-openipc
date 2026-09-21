@@ -1,0 +1,22 @@
+#!/bin/sh
+# OpenIPC-on-TF shim: 用静态板级值替代 U-Boot env(本 TF 环境拿不到 NAND env)。
+# 依据(2026-09-21 实证):
+#   /proc/meminfo "Memory: 53080K/65536K"  -> 本板 DDR 仅 64MB
+#   原厂 load3516cv608(64M 变体): mmz_start=0x42000000(0x40000000+32M OS), mmz_size=32M
+#   OpenIPC load_hisilicon 缺省 totalmem=64 / osmem=32 -> mmz 同为 0x42000000/32M
+# socmodel 故意不提供(exit 1) -> 跳过 open_svac3e / open_aiisp 分支
+var=""
+n=0
+for a in "$@"; do
+	if [ "$n" = "1" ]; then var="$a"; n=0; continue; fi
+	[ "$a" = "-n" ] && n=1
+done
+[ -n "$var" ] || var="$1"
+case "$var" in
+	totalmem) echo 64M ;;
+	osmem)    echo 32M ;;
+	sensor)   echo os05l10 ;;
+	upgrade)  echo 0 ;;
+	*) exit 1 ;;
+esac
+exit 0

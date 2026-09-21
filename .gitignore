@@ -1,0 +1,36 @@
+# 构建产物
+*.o
+*.ko
+*.mod
+*.mod.c
+*.cmd
+*.a
+*.itb
+uImage
+Image
+zImage
+*.dtb
+*.dts.tmp
+linux/
+out/
+linux-revision.txt
+modules.order
+Module.symvers
+.tmp*/
+
+# 厂商预编译二进制(不入库: 版权归 HiSilicon/OpenIPC, 由部署脚本从固件包取)
+*.so
+mpp_prebuilt.tar
+openipc.*.tgz
+sensor_cv6xx.tgz
+
+# 内核 / Ubuntu 镜像(体积大)
+*.ubifs
+*.ubi.img
+*.img
+*.bin
+
+# 杂项
+__pycache__/
+*.pyc
+.DS_Store
