@@ -58,7 +58,8 @@ YAML_FILE = "%s/etc/majestic.yaml" % BASE
 # 构建期断言：与设备上实测通过的指纹一致，不符即拒绝出包（防"镜像装旧件"）
 EXPECT_MD5 = {
     "libsns": "9378f86e6d8b5accc365f3775e6ad43d",  # I2C 修复版(.i2c_dev=0)
-    "init":   "b6c3e962763216dfa58abe6c5148db44",  # v3: safe_reboot+内存水位守护+日志轮转+tmpfs限额
+    # v4: 在 v3 基础上修"600s 有界等待误杀正常 majestic -> 每 10 分钟整机重启"的回归
+    "init":   "a9d21478abc2d75d991e4ecf272073df",
     "yaml":   "0837da681f269799f9b1d8f89db57d8e",  # 关 HLS + audio off（内存从 0.9MB -> 4.5MB）
 }
 

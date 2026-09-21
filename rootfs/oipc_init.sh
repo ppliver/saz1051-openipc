@@ -12,6 +12,9 @@
 #   4. 内存水位守护：MemAvailable 低于阈值时主动优雅重启 majestic，抢在 OOM 之前。
 #   5. majestic.log 轮转，避免长时间运行后无限增长。
 #
+# v4 修正 v3 的致命回归：监督循环由"600s 有界等待+SIGKILL"改为无限等待 + 健康判定，
+#   否则正常运行的 majestic 每 600s 被误杀一次 -> rc=137 -> 整机重启（每 10 分钟一次）。
+#
 # ★ 试过但**不可用**：v2 的 trim_modules() 卸载 IVE/NPU/H265E/JPEGE/VCA/音频/PIRIS 后，
 #   majestic 起来即 `Unable to handle kernel NULL pointer dereference ...
 #   PC is at vpss_get_vb_cfg+0xe/0x18 [open_vpss]`（VB 池配置随之失效）-> panic 循环。
@@ -57,7 +60,7 @@ mount -t devpts   devpts /dev/pts  2>/dev/null
 echo /sbin/mdev > /proc/sys/kernel/hotplug 2>/dev/null
 mdev -s 2>/dev/null
 
-say "=== SAZ1051 OpenIPC (NAND) init v3 ==="
+say "=== SAZ1051 OpenIPC (NAND) init v4 ==="
 say "kernel : $(cat /proc/version)"
 say "cmdline: $(cat /proc/cmdline)"
 say "mem    : MemAvailable=$(memavail)kB"
@@ -203,10 +206,15 @@ maj_supervise() {
 		say "[6] venc timeouts: $(grep -c 'Timeout from venc' /tmp/majestic.log 2>/dev/null)"
 		diag "[6] supervisor check: $(cat /proc/umap/mipi_rx 2>/dev/null | tr -d ' ' | grep -a 'cil_clk_cur_stat\|mipi_vc0_w' | tr '\n' ' ')"
 
-		# ★ 有界等待 + 内存水位守护：裸 wait 在 majestic 卡死时永不返回 -> 监督循环停转。
+		# ★ 无限等待 + 健康/内存守护。
+		#   ⚠️ 血泪教训(2026-09-22)：这里**不能**用"跑满 N 秒就 SIGKILL"的写法 ——
+		#   majestic 正常运行时进程当然一直活着，600s 一到就被误判成卡死并 SIGKILL，
+		#   rc=137 又被当成异常退出 -> 整机重启，**结果是每 10 分钟准时重启一次**。
+		#   "卡死"只能用健康指标判定：进程在、但 :554 不再监听(连续 3 次采样)。
 		w=0
 		mem_hit=0
-		while [ $w -lt 600 ]; do
+		hung=0
+		while true; do
 			kill -0 $MP 2>/dev/null || break
 			w=$((w+1))
 			# 每 30s 复核 MIPI
@@ -227,6 +235,22 @@ maj_supervise() {
 					kill -INT $MP 2>/dev/null
 					sleep 5
 					break
+				fi
+			fi
+			# 每 60s 健康检查：进程还在但 :554 掉了 -> 累计 3 次才判定真卡死
+			if [ $((w % 60)) -eq 0 ]; then
+				if netstat -ltn 2>/dev/null | grep -q ':554'; then
+					hung=0
+				else
+					hung=$((hung+1))
+					say "[6] majestic alive but :554 down ($hung/3)"
+					if [ "$hung" -ge 3 ]; then
+						say "[6] majestic HUNG -> SIGKILL"
+						mem_hit=1
+						kill -9 $MP 2>/dev/null
+						sleep 2
+						break
+					fi
 				fi
 			fi
 			sleep 1

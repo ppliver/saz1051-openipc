@@ -32,12 +32,14 @@ MTD = "/dev/mtd3"
 ERASE = "/saz_nand/my_flash_erase"
 WRITE = "/saz_nand/my_nandwrite"
 ERASE_LEN = "0x6000000"
-# ★ new5 = 2026-09-22 稳定性优化镜像：在 new4 基础上换 init v3（safe_reboot + 内存水位守护
-#   + 日志轮转 + tmpfs 限额）与关 HLS/audio 的 majestic.yaml（可用内存 0.9MB -> 4.5MB，
-#   web 后台不再触发 OOM panic）。new4/new3/new2 依次留作回退。
-IMG_CANDIDATES = ["/rootfs_ubi_new5.img", "/rootfs_ubi_new4.img", "/rootfs_ubi_new3.img",
-                  "/rootfs_ubi_new2.img", "/rf.img", "/rootfs_ubi_new.img", "/rootfs_ubi.img"]
-LOCAL_IMG = r'D:\projects\saz1051\firmware\nand_package\rootfs_ubi_new5.img'
+# ★ new6 = 2026-09-22 稳定性治理镜像：init v4（safe_reboot + 内存水位守护 + 日志轮转
+#   + tmpfs 限额 + 修掉"600s 误杀正常 majestic 导致每 10 分钟重启"的回归）
+#   + 关 HLS/audio 的 majestic.yaml（可用内存 0.9MB -> 4.5MB，web 后台不再 OOM panic）。
+#   new5 含 v3 的 10 分钟重启回归，勿用。new4/new3/new2 依次回退。
+IMG_CANDIDATES = ["/rootfs_ubi_new6.img", "/rootfs_ubi_new5.img", "/rootfs_ubi_new4.img",
+                  "/rootfs_ubi_new3.img", "/rootfs_ubi_new2.img", "/rf.img",
+                  "/rootfs_ubi_new.img", "/rootfs_ubi.img"]
+LOCAL_IMG = r'D:\projects\saz1051\firmware\nand_package\rootfs_ubi_new6.img'
 
 
 def log(msg):
